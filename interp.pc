@@ -1,0 +1,300 @@
+;; #lang racket
+;; (require "parenthec.rkt")
+
+(define-program-counter *pc*)
+(define-registers *expr* *env* *k* *y* *rator* *rand* *v*)
+
+(define-union expr
+  (const cexp)
+  (var n)
+  (if test conseq alt)
+  (mult nexp1 nexp2)
+  (sub1 nexp)
+  (zero nexp)
+  (catch body)
+  (throw kexp vexp)
+  (let exp body)
+  (lambda body)
+  (app rator rand))
+
+(define-label value-of-cps
+    (union-case *expr* expr
+                ((const expr)
+                 (begin
+                   (set! *k* *k*)
+                   (set! *v* expr)
+                   (set! *pc* apply-k)))
+                ((mult x1 x2)
+                 (begin
+                   (set! *k* (kt_make-mult1-k x2 *env* *k*))
+                   (set! *expr* x1)
+                   (set! *env* *env*)
+                   (set! *pc* value-of-cps)))
+                ((sub1 x)
+                 (begin
+                   (set! *k* (kt_make-sub1-k *k*))
+                   (set! *expr* x)
+                   (set! *env* *env*)
+                   (set! *pc* value-of-cps)))
+                ((zero x)
+                 (begin
+                   (set! *k* (kt_make-zero-k *k*))
+                   (set! *expr* x)
+                   (set! *env* *env*)
+                   (set! *pc* value-of-cps)))
+                ((if test conseq alt)
+                 (begin
+                   (set! *k* (kt_make-test-k conseq *env* alt *k*))
+                   (set! *expr* test)
+                   (set! *env* *env*)
+                   (set! *pc* value-of-cps)))
+                ((catch body)
+                 (begin
+                   (set! *k* *k*)
+                   (set! *expr* body)
+                   (set! *env* (envr_extend-env *k* *env*))
+                   (set! *pc* value-of-cps)))
+                ((throw k-exp v-exp)
+                 (begin
+                   (set! *k* (kt_make-throw-k v-exp *env*))
+                   (set! *expr* k-exp)
+                   (set! *env* *env*)
+                   (set! *pc* value-of-cps)))
+                ((let e body)
+                 (begin
+                   (set! *k* (kt_make-let-k body *env* *k*))
+                   (set! *expr* e)
+                   (set! *env* *env*)
+                   (set! *pc* value-of-cps)))
+                ((var y)
+                 (begin
+                   (set! *k* *k*)
+                   (set! *env* *env*)
+                   (set! *y* y)
+                   (set! *pc* apply-env)))
+                ((lambda body)
+                 (begin
+                   (set! *k* *k*)
+                   (set! *v* (clos_make-closure body *env*))
+                   (set! *pc* apply-k)))
+                ((app rator rand)
+                 (begin
+                   (set! *k* (kt_make-rator-k rand *env* *k*))
+                   (set! *expr* rator)
+                   (set! *env* *env*)
+                   (set! *pc* value-of-cps)))))
+
+(define-label empty-env
+  (lambda ()
+    `(empty-env)))
+
+(define-label empty-k
+  (lambda ()
+    `(empty-k)))
+
+(define-label apply-env
+    (union-case *env* envr
+                ((extend-env arg^ env^)
+                 (cond
+                   ((zero? *y*)
+                    (begin
+                      (set! *k* *k*)
+                      (set! *v* arg^)
+                      (set! *pc* apply-k)))
+                   (else
+                    (begin
+                      (set! *k* *k*)
+                      (set! *y* (sub1 *y*))
+                      (set! *env* env^)
+                      (set! *pc* apply-env)))))
+                ((empty-env)
+                 (error 'value-of "unbound identifier"))))
+
+(define-union envr
+  (extend-env arg^ env^)
+  (empty-env))
+
+(define-label apply-closure
+    (union-case *rator* clos
+                ((make-closure body env)
+                 (begin
+                   (set! *k* *k*)
+                   (set! *expr* body)
+                   (set! *env* (envr_extend-env *rand* env))
+                   (set! *pc* value-of-cps)))))
+
+(define-union clos
+  (make-closure body env))
+
+(define-label apply-k
+    (union-case *k* kt
+                ((make-mult1-k x2^ env^ k^)
+                 (begin
+                   (set! *k* (kt_make-mult2-k *v* k^))
+                   (set! *expr* x2^)
+                   (set! *env* env^)
+                   (set! *pc* value-of-cps)))
+                ((make-mult2-k v^ k^)
+                 (begin
+                   (set! *k* k^)
+                   (set! *v* (* v^ *v*))
+                   (set! *pc* apply-k)))
+                ((make-sub1-k k^)
+                 (begin
+                   (set! *k* k^)
+                   (set! *v* (sub1 *v*))
+                   (set! *pc* apply-k)))
+                ((make-zero-k k^)
+                 (begin
+                   (set! *k* k^)
+                   (set! *v* (zero? *v*))
+                   (set! *pc* apply-k)))
+                ((make-alt-k v^ w^ k^)
+                 (begin
+                   (set! *k* k^)
+                   (set! *v* (if v^ w^ *v*))
+                   (set! *pc* apply-k)))
+                ((make-conseq-k alt^ env^ v^ k^)
+                 (begin
+                   (set! *expr* alt^)
+                   (set! *env* env^)
+                   (set! *k* (kt_make-alt-k v^ *v* k^))
+                   (set! *pc* value-of-cps)))
+                ((make-test-k conseq^ env^ alt^ k^)
+                 (cond
+                   (*v*
+                    (begin
+                      (set! *expr* conseq^)
+                      (set! *env* env^)
+                      (set! *k* k^)
+                      (set! *pc* value-of-cps)))
+                   (else
+                    (begin
+                      (set! *expr* alt^)
+                      (set! *env* env^)
+                      (set! *k* k^)
+                      (set! *pc* value-of-cps)))))
+                ((make-throw-k v-exp^ env^)
+                 (begin
+                   (set! *expr* v-exp^)
+                   (set! *env* env^)
+                   (set! *k* *v*)
+                   (set! *pc* value-of-cps)))
+                ((make-let-k body^ env^ k^)
+                 (begin
+                   (set! *expr* body^)
+                   (set! *env* (envr_extend-env *v* env^))
+                   (set! *k* k^)
+                   (set! *pc* value-of-cps)))
+                ((make-rand-k v^ k^)
+                 (begin
+                   (set! *rator* v^)
+                   (set! *rand* *v*)
+                   (set! *k* k^)
+                   (set! *pc* apply-closure)))
+                ((make-rator-k rand^ env^ k^)
+                 (begin
+                   (set! *expr* rand^)
+                   (set! *env* env^)
+                   (set! *k* (kt_make-rand-k *v* k^))
+                   (set! *pc* value-of-cps)))
+                ((empty-k jumpout)
+                 (dismount-trampoline jumpout))))
+
+(define-union kt
+  (make-mult1-k x2^ env^ k^)
+  (make-mult2-k v^ k^)
+  (make-sub1-k k^)
+  (make-zero-k k^)
+  (make-alt-k v^ w^ k^)
+  (make-conseq-k alt^ env^ v^ k^)
+  (make-test-k conseq^ env^ alt^ k^)
+  (make-throw-k v-exp^ env^)
+  (make-let-k body^ env^ k^)
+  (make-rand-k v^ k^)
+  (make-rator-k rand^ env^ k^)
+  (empty-k jumpout))
+
+(define-label extend-env
+  (lambda (arg^ env^)
+    `(extend-env ,arg^ ,env^)))
+
+(define-label make-closure
+  (lambda (body env)
+    `(make-closure ,body ,env)))
+
+(define-label make-mult1-k
+  (lambda (x2^ env^ k^)
+    `(make-mult1-k ,x2^ ,env^ ,k^)))
+
+(define-label make-mult2-k
+  (lambda (v^ k^)
+    `(make-mult2-k ,v^ ,k^)))
+
+(define-label make-sub1-k
+  (lambda (k^)
+    `(make-sub1-k ,k^)))
+
+(define-label make-zero-k
+  (lambda (k^)
+    `(make-zero-k ,k^)))
+
+(define-label make-alt-k
+  (lambda (v^ w^ k^)
+    `(make-alt-k ,v^ ,w^ ,k^)))
+
+(define-label make-conseq-k
+  (lambda (alt^ env^ v^ k^)
+    `(make-conseq-k ,alt^ ,env^ ,v^ ,k^)))
+
+(define-label make-test-k
+  (lambda (conseq^ env^ alt^ k^)
+    `(make-test-k ,conseq^ ,env^ ,alt^ ,k^)))
+
+(define-label make-throw-k
+  (lambda (v-exp^ env^)
+    `(make-throw-k ,v-exp^ ,env^)))
+
+(define-label make-let-k
+  (lambda (body^ env^ k^)
+    `(make-let-k ,body^ ,env^ ,k^)))
+
+(define-label make-rand-k
+  (lambda (v^ k^)
+    `(make-rand-k ,v^ ,k^)))
+
+(define-label make-rator-k
+  (lambda (rand^ env^ k^)
+    `(make-rator-k ,rand^ ,env^ ,k^)))
+
+(define-label main
+    (begin
+      (set! *expr*
+            (expr_let
+             (expr_lambda
+              (expr_lambda
+               (expr_if
+                (expr_zero (expr_var 0))
+                (expr_const 1)
+                (expr_mult
+                 (expr_var 0)
+                 (expr_app
+                  (expr_app (expr_var 1) (expr_var 1))
+                  (expr_sub1 (expr_var 0)))))))
+             (expr_mult
+              (expr_catch
+               (expr_app
+                (expr_app (expr_var 1) (expr_var 1))
+                (expr_throw
+                 (expr_var 0)
+                 (expr_app
+                  (expr_app (expr_var 1) (expr_var 1))
+                  (expr_const 4)))))
+              (expr_const 5))))
+      (set! *env* (empty-env))
+     ; (set! *k* (kt_empty-k))
+      (set! *pc* value-of-cps)
+      (mount-trampoline kt_empty-k *k* *pc*)
+      (printf "Fact 5: ~s\n" *v*)))
+
+;; (main)
